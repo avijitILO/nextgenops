@@ -1,2 +1,0 @@
-# nextgenops
-reboot project
