@@ -1,0 +1,284 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgresql:
+    image: postgres:14
+    container_name: postgresql
+    environment:
+      POSTGRES_DB: main_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secure_password
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+      - ./postgresql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - ai-network
+
+  # Redis with RedisAI
+  redis:
+    image: redislabs/redisai:latest
+    container_name: redis-ai
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai-network
+
+  # Zammad Ticketing System
+  zammad-backup:
+    command: ["zammad-backup"]
+    depends_on:
+      - postgresql
+      - redis
+    environment:
+      BACKUP_SLEEP: 86400
+      HOLD_DAYS: 10
+      POSTGRESQL_DB: zammad_db
+      POSTGRESQL_HOST: postgresql
+      POSTGRESQL_PASS: secure_password
+      POSTGRESQL_USER: admin
+      REDIS_URL: redis://redis:6379
+    image: zammad/zammad-docker-compose:latest
+    restart: unless-stopped
+    volumes:
+      - zammad_data:/var/lib/zammad
+    networks:
+      - ai-network
+
+  zammad-init:
+    command: ["zammad-init"]
+    depends_on:
+      - postgresql
+      - redis
+    environment:
+      POSTGRESQL_DB: zammad_db
+      POSTGRESQL_HOST: postgresql
+      POSTGRESQL_PASS: secure_password
+      POSTGRESQL_USER: admin
+      REDIS_URL: redis://redis:6379
+    image: zammad/zammad-docker-compose:latest
+    restart: "no"
+    volumes:
+      - zammad_data:/var/lib/zammad
+    networks:
+      - ai-network
+
+  zammad-nginx:
+    command: ["zammad-nginx"]
+    depends_on:
+      - zammad-railsserver
+    image: zammad/zammad-docker-compose:latest
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    volumes:
+      - zammad_data:/var/lib/zammad
+    networks:
+      - ai-network
+
+  zammad-railsserver:
+    command: ["zammad-railsserver"]
+    depends_on:
+      - zammad-init
+    environment:
+      POSTGRESQL_DB: zammad_db
+      POSTGRESQL_HOST: postgresql
+      POSTGRESQL_PASS: secure_password
+      POSTGRESQL_USER: admin
+      REDIS_URL: redis://redis:6379
+    image: zammad/zammad-docker-compose:latest
+    restart: unless-stopped
+    volumes:
+      - zammad_data:/var/lib/zammad
+    networks:
+      - ai-network
+
+  zammad-scheduler:
+    command: ["zammad-scheduler"]
+    depends_on:
+      - zammad-init
+    environment:
+      POSTGRESQL_DB: zammad_db
+      POSTGRESQL_HOST: postgresql
+      POSTGRESQL_PASS: secure_password
+      POSTGRESQL_USER: admin
+      REDIS_URL: redis://redis:6379
+    image: zammad/zammad-docker-compose:latest
+    restart: unless-stopped
+    volumes:
+      - zammad_data:/var/lib/zammad
+    networks:
+      - ai-network
+
+  zammad-websocket:
+    command: ["zammad-websocket"]
+    depends_on:
+      - zammad-init
+    environment:
+      POSTGRESQL_DB: zammad_db
+      POSTGRESQL_HOST: postgresql
+      POSTGRESQL_PASS: secure_password
+      POSTGRESQL_USER: admin
+      REDIS_URL: redis://redis:6379
+    image: zammad/zammad-docker-compose:latest
+    restart: unless-stopped
+    volumes:
+      - zammad_data:/var/lib/zammad
+    networks:
+      - ai-network
+
+  # BookStack Knowledge Base
+  bookstack:
+    image: lscr.io/linuxserver/bookstack:latest
+    container_name: bookstack
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - APP_URL=http://localhost:6875
+      - DB_HOST=postgresql
+      - DB_DATABASE=bookstack_db
+      - DB_USERNAME=admin
+      - DB_PASSWORD=secure_password
+    volumes:
+      - bookstack_data:/config
+    ports:
+      - "6875:80"
+    depends_on:
+      - postgresql
+    networks:
+      - ai-network
+
+  # n8n Workflow Automation
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=secure_password
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=UTC
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgresql
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n_db
+      - DB_POSTGRESDB_USER=admin
+      - DB_POSTGRESDB_PASSWORD=secure_password
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - postgresql
+    networks:
+      - ai-network
+
+  # Rasa NLU/Core
+  rasa:
+    build: ./rasa
+    container_name: rasa
+    ports:
+      - "5005:5005"
+    volumes:
+      - ./rasa:/app
+      - rasa_models:/app/models
+    environment:
+      - RASA_DUCKLING_HTTP_URL=http://duckling:8000
+      - RASA_REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - duckling
+    networks:
+      - ai-network
+
+  # Duckling for entity extraction
+  duckling:
+    image: rasa/duckling:latest
+    container_name: duckling
+    ports:
+      - "8000:8000"
+    networks:
+      - ai-network
+
+  # Haystack for document search
+  haystack:
+    build: ./haystack
+    container_name: haystack
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./haystack:/app
+      - haystack_data:/app/data
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - elasticsearch
+      - redis
+    networks:
+      - ai-network
+
+  # Elasticsearch for Haystack
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - ai-network
+
+  # Frontend Chat Interface
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_RASA_URL=http://localhost:5005
+      - REACT_APP_HAYSTACK_URL=http://localhost:8001
+      - REACT_APP_ZAMMAD_URL=http://localhost:8080
+      - REACT_APP_N8N_URL=http://localhost:5678
+    depends_on:
+      - rasa
+      - haystack
+    networks:
+      - ai-network
+
+  # Portainer for container management
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - ai-network
+
+volumes:
+  postgresql_data:
+  redis_data:
+  zammad_data:
+  bookstack_data:
+  n8n_data:
+  rasa_models:
+  haystack_data:
+  elasticsearch_data:
+  portainer_data:
+
+networks:
+  ai-network:
+    driver: bridge
